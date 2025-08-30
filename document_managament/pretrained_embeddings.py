@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Any
 import logging
 import re
 from collections import Counter
@@ -17,6 +17,7 @@ class PretrainedEmbeddings:
         self.fallback_embeddings = {}
         self.domain_keywords = self._load_domain_keywords()
         self.idf_weights = {}
+        self.dynamic_weights = {}  # Для динамических весов
         self.load_model()
 
     def _load_domain_keywords(self) -> Dict[str, float]:
@@ -46,6 +47,15 @@ class PretrainedEmbeddings:
             'fullstack': 1.7, 'devops': 1.7, 'qa': 1.6, 'тестирование': 1.6,
             'разработка': 1.6, 'программирование': 1.6, 'код': 1.5
         }
+
+    def update_domain_weights(self, new_weights: Dict[str, float]):
+        """Обновление весов доменных ключевых слов"""
+        for word, weight in new_weights.items():
+            self.domain_keywords[word] = weight
+            # Также обновляем IDF веса
+            self.idf_weights[word] = weight
+
+        print(f"Обновлено весов: {len(new_weights)}")
 
     def load_model(self):
         """Загрузка предобученной модели"""
@@ -354,7 +364,7 @@ class PretrainedEmbeddings:
         words1 = self._preprocess_text(text1)
         words2 = self._preprocess_text(text2)
 
-        # Количество ключевых слов в каждом тексте
+        # Количество ключевых слов в каждом текстах
         key_words1 = [w for w in words1 if w in self.domain_keywords]
         key_words2 = [w for w in words2 if w in self.domain_keywords]
 
@@ -396,22 +406,26 @@ class PretrainedEmbeddings:
             return len(self.model.key_to_index)
         return len(self.fallback_embeddings)
 
-    # Добавим в PretrainedEmbeddings класс:
-
     def _calculate_vacancy_specific_similarity(self, job_text: str, resume_text: str, job_title: str) -> float:
         """Вычисление схожести с учетом специфики вакансии"""
         base_similarity = self.calculate_similarity(job_text, resume_text)
 
-        # Определяем тип вакансии по заголовку
         vacancy_type = self._classify_vacancy_type(job_title)
-
-        # Анализируем специфику резюме
         resume_type = self._classify_resume_type(resume_text)
+        adjustment = self._get_similarity_adjustment(vacancy_type, resume_type)
 
-        # Корректируем схожесть based on type matching
-        similarity_adjustment = self._get_similarity_adjustment(vacancy_type, resume_type)
+        final_similarity = base_similarity * adjustment
 
-        return base_similarity * similarity_adjustment
+        # Логгирование для отладки
+        print(f"  Вакансия: {vacancy_type}, Резюме: {resume_type}, "
+              f"Базовая: {base_similarity:.3f}, Коррекция: {adjustment:.2f}, "
+              f"Итог: {final_similarity:.3f}")
+
+        return final_similarity
+
+    def calculate_vacancy_specific_similarity(self, job_text: str, resume_text: str, job_title: str) -> float:
+        """Публичный метод для вакансио-специфичной схожести"""
+        return self._calculate_vacancy_specific_similarity(job_text, resume_text, job_title)
 
     def _classify_vacancy_type(self, job_title: str) -> str:
         """Классификация типа вакансии"""
@@ -479,9 +493,69 @@ class PretrainedEmbeddings:
 
         return adjustment_matrix.get(vacancy_type, {}).get(resume_type, 1.0)
 
-    def calculate_vacancy_specific_similarity(self, job_text: str, resume_text: str, job_title: str) -> float:
-        """Публичный метод для вакансио-специфичной схожести"""
-        return self._calculate_vacancy_specific_similarity(job_text, resume_text, job_title)
+    def calculate_similarity_detailed(self, text1: str, text2: str) -> Dict[str, Any]:
+        """
+        Детальный расчет схожести с дополнительной информацией
+
+        Returns:
+            Словарь с детальной информацией о схожести
+        """
+        vec1 = self.get_document_vector(text1, 'weighted_domain')
+        vec2 = self.get_document_vector(text2, 'weighted_domain')
+
+        # Косинусная схожесть
+        norm1 = np.linalg.norm(vec1) + 1e-10
+        norm2 = np.linalg.norm(vec2) + 1e-10
+        cosine_sim = np.dot(vec1, vec2) / (norm1 * norm2)
+        base_similarity = max(0.0, min(1.0, (cosine_sim + 1) / 2))
+
+        # Улучшенная схожесть
+        enhanced_similarity = self._enhance_discrimination(base_similarity, text1, text2)
+
+        # Анализ ключевых слов
+        keywords_analysis = self._analyze_keywords_match(text1, text2)
+
+        return {
+            'cosine_similarity': float(base_similarity),
+            'enhanced_similarity': float(enhanced_similarity),
+            'keywords_analysis': keywords_analysis,
+            'vector_norm_text1': float(norm1),
+            'vector_norm_text2': float(norm2)
+        }
+
+    def _analyze_keywords_match(self, text1: str, text2: str) -> Dict[str, Any]:
+        """Детальный анализ совпадения ключевых слов"""
+        words1 = set(self._preprocess_text(text1))
+        words2 = set(self._preprocess_text(text2))
+
+        # Все ключевые слова
+        all_keywords = set(self.domain_keywords.keys())
+
+        # Ключевые слова в каждом тексте
+        keywords1 = words1 & all_keywords
+        keywords2 = words2 & all_keywords
+
+        # Совпадающие ключевые слова
+        matched_keywords = keywords1 & keywords2
+
+        # Уникальные ключевые слова
+        unique1 = keywords1 - keywords2
+        unique2 = keywords2 - keywords1
+
+        # Взвешенные оценки
+        matched_weight = sum(self.domain_keywords[word] for word in matched_keywords)
+        total_weight = sum(self.domain_keywords[word] for word in (keywords1 | keywords2))
+
+        coverage = matched_weight / total_weight if total_weight > 0 else 0
+
+        return {
+            'matched_keywords': list(matched_keywords),
+            'unique_text1': list(unique1),
+            'unique_text2': list(unique2),
+            'coverage_score': float(coverage),
+            'matched_count': len(matched_keywords),
+            'total_keywords_count': len(keywords1 | keywords2)
+        }
 
 
 # Пример использования

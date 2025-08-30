@@ -5,12 +5,14 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import json
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, Any, Optional
 from document_managament.document_factory import DocumentFactory
 from document_managament.word2vec_processor import Word2VecProcessor
 from document_managament.pretrained_embeddings import PretrainedEmbeddings
+from document_managament.dynamic_scaling_system import DynamicScalingSystem
 import re
 import logging
+from collections import Counter
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -22,9 +24,12 @@ class DocumentManager:
                  text_embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
                  rebuild_all_indexes=False,
                  use_word2vec=True,
-                 use_pretrained=False,  # Новый параметр
-                 pretrained_model_type: str = "word2vec"  # Тип предобученной модели
-                 ):
+                 use_pretrained=False,
+                 pretrained_model_type: str = "word2vec",
+                 enable_dynamic_scaling: bool = True,
+                 min_domain_frequency: int = 3,
+                 min_subdomain_frequency: int = 2):
+
         self.text_embedding_model = text_embedding_model
         self.text_embeddings = HuggingFaceEmbeddings(model_name=self.text_embedding_model)
 
@@ -43,6 +48,12 @@ class DocumentManager:
         self.use_word2vec = use_word2vec if not use_pretrained else False
         self.pretrained_model_type = pretrained_model_type
 
+        # Динамическое масштабирование
+        self.enable_dynamic_scaling = enable_dynamic_scaling
+        self.min_domain_frequency = min_domain_frequency
+        self.min_subdomain_frequency = min_subdomain_frequency
+        self.dynamic_scaling_system = None
+
         self.word2vec_processor = None
         self.pretrained_embeddings = None
 
@@ -51,6 +62,10 @@ class DocumentManager:
 
         if not self.use_pretrained:
             self._train_word2vec_model()
+
+        # Инициализация системы динамического масштабирования
+        if self.enable_dynamic_scaling:
+            self._initialize_dynamic_scaling()
 
     def _setup_embeddings(self):
         """Настройка системы эмбеддингов"""
@@ -64,6 +79,45 @@ class DocumentManager:
         else:
             print("Использование только TF-IDF...")
             self.word2vec_processor = None
+
+    def _initialize_dynamic_scaling(self):
+        """Инициализация системы динамического масштабирования"""
+        print("Инициализация системы динамического масштабирования...")
+
+        # Собираем все тексты для анализа доменов
+        all_texts = []
+        document_types = []
+
+        # Тексты вакансий
+        for job_doc in self.job_requirement_documents:
+            texts = job_doc.get_all_text()
+            if texts:
+                all_texts.extend(texts)
+                document_types.extend(['vacancy'] * len(texts))
+
+        # Тексты резюме
+        for resume_doc in self.resume_documents:
+            texts = resume_doc.get_all_text()
+            if texts:
+                all_texts.extend(texts)
+                document_types.extend(['resume'] * len(texts))
+
+        if all_texts:
+            self.dynamic_scaling_system = DynamicScalingSystem(
+                min_domain_frequency=self.min_domain_frequency,
+                min_subdomain_frequency=self.min_subdomain_frequency
+            )
+
+            # Анализируем тексты для извлечения доменов
+            self.dynamic_scaling_system.analyze_documents(all_texts, document_types)
+
+            # Обновляем веса в pretrained embeddings если они используются
+            if self.use_pretrained and self.pretrained_embeddings:
+                domain_weights = self.dynamic_scaling_system.get_domain_weights()
+                self.pretrained_embeddings.update_domain_weights(domain_weights)
+
+            print(f"Динамически извлечено доменов: {len(self.dynamic_scaling_system.get_domains())}")
+            print(f"Динамически извлечено поддоменов: {len(self.dynamic_scaling_system.get_subdomains())}")
 
     def load_documents(self):
         """Загружает документы из четко разделенных папок"""
@@ -306,8 +360,15 @@ class DocumentManager:
         info = {
             'resumes_count': len(self.resume_documents),
             'vacancies_count': len(self.job_requirement_documents),
-            'embedding_mode': 'pretrained' if self.use_pretrained else 'word2vec' if self.use_word2vec else 'tfidf_only'
+            'embedding_mode': 'pretrained' if self.use_pretrained else 'word2vec' if self.use_word2vec else 'tfidf_only',
+            'dynamic_scaling_enabled': self.enable_dynamic_scaling
         }
+
+        if self.enable_dynamic_scaling and self.dynamic_scaling_system:
+            info.update({
+                'domains_count': len(self.dynamic_scaling_system.get_domains()),
+                'subdomains_count': len(self.dynamic_scaling_system.get_subdomains())
+            })
 
         if self.use_pretrained and self.pretrained_embeddings:
             info.update({
@@ -322,36 +383,279 @@ class DocumentManager:
 
         return info
 
+    def update_dynamic_weights(self, new_texts: List[str], document_types: List[str] = None):
+        """Обновление весов на основе новых данных"""
+        if not self.enable_dynamic_scaling or not self.dynamic_scaling_system:
+            return
+
+        if document_types is None:
+            document_types = ['unknown'] * len(new_texts)
+
+        self.dynamic_scaling_system.analyze_documents(new_texts, document_types)
+
+        # Обновляем веса в pretrained embeddings
+        if self.use_pretrained and self.pretrained_embeddings:
+            domain_weights = self.dynamic_scaling_system.get_domain_weights()
+            self.pretrained_embeddings.update_domain_weights(domain_weights)
+
+        print("Динамические веса успешно обновлены")
+
+    def get_domain_analysis(self) -> Dict:
+        """Возвращает анализ доменов и поддоменов"""
+        if not self.enable_dynamic_scaling or not self.dynamic_scaling_system:
+            return {}
+
+        return {
+            'domains': self.dynamic_scaling_system.get_domains(),
+            'subdomains': self.dynamic_scaling_system.get_subdomains(),
+            'domain_weights': self.dynamic_scaling_system.get_domain_weights()
+        }
+
+    def get_specific_match(self, resume_name: str, vacancy_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Находит соответствие конкретного резюме конкретной вакансии
+
+        Args:
+            resume_name: Имя файла резюме
+            vacancy_name: Имя файла вакансии
+
+        Returns:
+            Словарь с информацией о соответствии или None если не найдено
+        """
+        print(f"\nПоиск соответствия: резюме '{resume_name}' -> вакансия '{vacancy_name}'")
+
+        # Находим резюме
+        resume_doc = None
+        for doc in self.resume_documents:
+            if doc.document_name == resume_name or doc.document_name.startswith(resume_name):
+                resume_doc = doc
+                break
+
+        if not resume_doc:
+            print(f"Резюме '{resume_name}' не найдено")
+            return None
+
+        # Находим вакансию
+        vacancy_doc = None
+        for doc in self.job_requirement_documents:
+            if doc.document_name == vacancy_name or doc.document_name.startswith(vacancy_name):
+                vacancy_doc = doc
+                break
+
+        if not vacancy_doc:
+            print(f"Вакансия '{vacancy_name}' не найдена")
+            return None
+
+        # Получаем тексты
+        resume_text = " ".join(resume_doc.get_all_text())
+        vacancy_text = " ".join(vacancy_doc.get_all_text())
+
+        if not resume_text or not vacancy_text:
+            print("Один из документов пуст")
+            return None
+
+        # Вычисляем схожесть
+        try:
+            if self.use_pretrained and self.pretrained_embeddings:
+                similarity = self.pretrained_embeddings.calculate_vacancy_specific_similarity(
+                    vacancy_text, resume_text, vacancy_doc.document_name
+                )
+            else:
+                similarity = self._calculate_hybrid_similarity(vacancy_text, resume_text)
+
+            # Дополнительный анализ
+            domain_analysis = self._analyze_domain_compatibility(vacancy_text, resume_text)
+
+            result = {
+                'similarity_score': float(similarity),
+                'resume_name': resume_doc.document_name,
+                'vacancy_name': vacancy_doc.document_name,
+                'resume_text_preview': resume_text[:200] + "..." if len(resume_text) > 200 else resume_text,
+                'vacancy_text_preview': vacancy_text[:200] + "..." if len(vacancy_text) > 200 else vacancy_text,
+                'domain_analysis': domain_analysis,
+                'match_level': self._get_match_level(similarity),
+                'recommendation': self._get_recommendation(similarity, domain_analysis)
+            }
+
+            print(f"Схожесть: {similarity:.3f} ({result['match_level']})")
+            return result
+
+        except Exception as e:
+            print(f"Ошибка при вычислении схожести: {e}")
+            return None
+
+    def _analyze_domain_compatibility(self, vacancy_text: str, resume_text: str) -> Dict[str, Any]:
+        """Анализ доменной совместимости"""
+        analysis = {
+            'shared_keywords': [],
+            'missing_keywords': [],
+            'domain_compatibility': 0.0
+        }
+
+        if self.enable_dynamic_scaling and self.dynamic_scaling_system:
+            # Анализ с использованием динамической системы
+            vacancy_domain = self.dynamic_scaling_system.suggest_domain_for_text(vacancy_text)
+            resume_domain = self.dynamic_scaling_system.suggest_domain_for_text(resume_text)
+
+            analysis['vacancy_domain'] = vacancy_domain
+            analysis['resume_domain'] = resume_domain
+            analysis['domain_match'] = vacancy_domain == resume_domain
+
+            # Анализ ключевых слов
+            vacancy_words = set(self._preprocess_text(vacancy_text))
+            resume_words = set(self._preprocess_text(resume_text))
+
+            domain_weights = self.dynamic_scaling_system.get_domain_weights()
+            important_keywords = {k: v for k, v in domain_weights.items() if v > 1.5}
+
+            # Общие ключевые слова
+            shared = vacancy_words & resume_words & set(important_keywords.keys())
+            analysis['shared_keywords'] = list(shared)
+
+            # Отсутствующие ключевые слова
+            missing = (vacancy_words - resume_words) & set(important_keywords.keys())
+            analysis['missing_keywords'] = list(missing)
+
+            # Совместимость доменов
+            if shared:
+                analysis['domain_compatibility'] = len(shared) / len(important_keywords)
+
+        return analysis
+
+    def _get_match_level(self, similarity: float) -> str:
+        """Определение уровня соответствия"""
+        if similarity >= 0.8:
+            return "Отличное соответствие"
+        elif similarity >= 0.6:
+            return "Хорошее соответствие"
+        elif similarity >= 0.4:
+            return "Удовлетворительное соответствие"
+        else:
+            return "Низкое соответствие"
+
+    def _get_recommendation(self, similarity: float, domain_analysis: Dict) -> str:
+        """Генерация рекомендации"""
+        if similarity >= 0.7:
+            return "Рекомендуем к рассмотрению. Высокое соответствие требованиям."
+
+        recommendations = []
+
+        if similarity < 0.4:
+            recommendations.append("Рассмотреть других кандидатов или пересмотреть требования.")
+
+        if domain_analysis.get('missing_keywords'):
+            missing = ", ".join(domain_analysis['missing_keywords'][:3])
+            recommendations.append(f"Кандидату не хватает ключевых навыков: {missing}")
+
+        if not domain_analysis.get('domain_match', True):
+            recommendations.append("Разные домены специализации. Возможно не оптимальное соответствие.")
+
+        return " ".join(recommendations) if recommendations else "Требуется дополнительная оценка."
+
+    def _preprocess_text(self, text: str) -> List[str]:
+        """Предобработка текста для анализа"""
+        if not text:
+            return []
+
+        text = text.lower()
+        text = re.sub(r'[^а-яёa-z0-9\s]', ' ', text)
+        words = text.split()
+
+        # Базовые стоп-слова
+        stop_words = {'и', 'в', 'на', 'с', 'по', 'для', 'от', 'до'}
+        words = [word for word in words if word not in stop_words and len(word) > 2]
+
+        return words
+
 
 # Пример использования
 if __name__ == "__main__":
-    print("Тестирование DocumentManager с предобученными эмбеддингами...")
+    print("Тестирование DocumentManager с динамическим масштабированием...")
 
-    # Вариант 1: С предобученными эмбеддингами
+    # Вариант с динамическим масштабированием
     document_manager = DocumentManager(
         rebuild_all_indexes=False,
-        use_pretrained=True,  # Используем предобученные
-        use_word2vec=False  # Отключаем Word2Vec
+        use_pretrained=True,
+        use_word2vec=False,
+        enable_dynamic_scaling=True
     )
-
-    # Вариант 2: С Word2Vec обучением
-    # document_manager = DocumentManager(
-    #     rebuild_all_indexes=False,
-    #     use_pretrained=False,  # Не используем предобученные
-    #     use_word2vec=True      # Используем Word2Vec
-    # )
 
     # Информация о загруженных документах
     info = document_manager.get_documents_info()
     print(f"Информация о документах: {info}")
 
-    matches = document_manager.match_candidates_to_job(top_n=3)
+    # Анализ доменов
+    domain_analysis = document_manager.get_domain_analysis()
+    print(f"Извлеченные домены: {list(domain_analysis.get('domains', {}).keys())}")
+
+    # Пример 1: Поиск конкретного соответствия
+    print("\n" + "=" * 50)
+    print("ПОИСК КОНКРЕТНОГО СООТВЕТСТВИЯ")
+    print("=" * 50)
+
+    # Получаем список доступных файлов для демонстрации
+    available_resumes = [doc.document_name for doc in document_manager.resume_documents[:3]]
+    available_vacancies = [doc.document_name for doc in document_manager.job_requirement_documents[:3]]
+
+    if available_resumes and available_vacancies:
+        print(f"Доступные резюме: {available_resumes}")
+        print(f"Доступные вакансии: {available_vacancies}")
+
+        # Ищем соответствие для первого резюме и первой вакансии
+        resume_name = available_resumes[0]
+        vacancy_name = available_vacancies[0]
+
+        match_result = document_manager.get_specific_match(resume_name, vacancy_name)
+
+        if match_result:
+            print(f"\nРЕЗУЛЬТАТ СООТВЕТСТВИЯ:")
+            print(f"Резюме: {match_result['resume_name']}")
+            print(f"Вакансия: {match_result['vacancy_name']}")
+            print(f"Схожесть: {match_result['similarity_score']:.3f}")
+            print(f"Уровень: {match_result['match_level']}")
+            print(f"Рекомендация: {match_result['recommendation']}")
+
+            # Детальная информация
+            if match_result['domain_analysis']:
+                print(f"\nДОМЕННЫЙ АНАЛИЗ:")
+                print(f"Общие ключевые слова: {match_result['domain_analysis'].get('shared_keywords', [])[:5]}")
+                print(
+                    f"Отсутствующие ключевые слова: {match_result['domain_analysis'].get('missing_keywords', [])[:3]}")
+        else:
+            print("Не удалось найти соответствие")
+    else:
+        print("Недостаточно документов для тестирования")
+
+    # Пример 2: Массовое сопоставление
+    print("\n" + "=" * 50)
+    print("МАССОВОЕ СОПОСТАВЛЕНИЕ КАНДИДАТОВ")
+    print("=" * 50)
+
+    matches = document_manager.match_candidates_to_job(top_n=5)
 
     if matches:
-        for score, candidate_info in matches:
-            print(f"Схожесть: {score:.3f}")
-            print(f"Кандидат: {candidate_info['metadata']['document_name']}")
-            print(f"Вакансия: {candidate_info['job_name']}")
-            print("---")
+        for i, (score, candidate_info) in enumerate(matches, 1):
+            print(f"{i}. Схожесть: {score:.3f}")
+            print(f"   Кандидат: {candidate_info['metadata']['document_name']}")
+            print(f"   Вакансия: {candidate_info['job_name']}")
+            print("   " + "-" * 40)
     else:
         print("Не найдено совпадений")
+
+    # Пример 3: Тестирование с разными комбинациями
+    print("\n" + "=" * 50)
+    print("ТЕСТИРОВАНИЕ РАЗНЫХ КОМБИНАЦИЙ")
+    print("=" * 50)
+
+    if len(available_resumes) > 1 and len(available_vacancies) > 1:
+        # Тестируем несколько комбинаций
+        test_combinations = [
+            (available_resumes[0], available_vacancies[0]),
+            (available_resumes[0], available_vacancies[1]),
+            (available_resumes[1], available_vacancies[0])
+        ]
+
+        for resume, vacancy in test_combinations:
+            result = document_manager.get_specific_match(resume, vacancy)
+            if result:
+                print(f"{resume} -> {vacancy}: {result['similarity_score']:.3f} ({result['match_level']})")
