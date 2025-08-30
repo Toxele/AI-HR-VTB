@@ -9,6 +9,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import List
 import striprtf.striprtf as rtf
+import re
 
 
 class RtfDocument:
@@ -29,9 +30,13 @@ class RtfDocument:
         self.chunk_overlap = chunk_overlap
         self.document_name = document_name
 
+        # Очищаем имена директорий от кириллицы и специальных символов
+        safe_extract_dir_name = self._make_path_safe(extract_dir_name)
+        safe_text_storage_name = self._make_path_safe(text_storage_name)
+
         # Директории для документа
-        extract_dir = os.path.join(document_dir, 'index_' + extract_dir_name)
-        self.index_storage_path = os.path.join(extract_dir, text_storage_name)
+        extract_dir = os.path.join(document_dir, 'index_' + safe_extract_dir_name)
+        self.index_storage_path = os.path.join(extract_dir, safe_text_storage_name)
         self.document_path = os.path.join(document_dir, document_name)
 
         self.tfidf_vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
@@ -50,6 +55,19 @@ class RtfDocument:
             print(f"Создание индекса для RTF: {document_name}")
             Path(self.index_storage_path).mkdir(parents=True, exist_ok=True)
             self._build_index()
+
+    def _make_path_safe(self, path_string: str) -> str:
+        """Преобразует строку в безопасный для путей формат"""
+        # Заменяем кириллические символы и специальные символы
+        safe_string = re.sub(r'[^a-zA-Z0-9_\-]', '_', path_string)
+        # Убираем повторяющиеся подчеркивания
+        safe_string = re.sub(r'_+', '_', safe_string)
+        # Убираем подчеркивания в начале и конце
+        safe_string = safe_string.strip('_')
+        # Если строка пустая, используем дефолтное значение
+        if not safe_string:
+            safe_string = "default_index"
+        return safe_string
 
     def get_all_text(self) -> List[str]:
         """Возвращает весь текст документа в виде списка строк"""
@@ -98,25 +116,54 @@ class RtfDocument:
         self.text_chunks = self._extract_text()
 
         if self.text_chunks:
-            self.db = FAISS.from_documents(self.text_chunks, self.text_embeddings)
-            self.db.save_local(self.index_storage_path)
+            try:
+                self.db = FAISS.from_documents(self.text_chunks, self.text_embeddings)
+                self.db.save_local(self.index_storage_path)
 
-            chunks_path = os.path.join(self.index_storage_path, "text_chunks.pkl")
-            with open(chunks_path, "wb") as f:
-                pickle.dump(self.text_chunks, f)
+                chunks_path = os.path.join(self.index_storage_path, "text_chunks.pkl")
+                with open(chunks_path, "wb") as f:
+                    pickle.dump(self.text_chunks, f)
 
-            print(f"Индекс RTF создан: {self.document_name}")
+                print(f"Индекс RTF создан: {self.document_name}")
+            except Exception as e:
+                print(f"Ошибка создания индекса FAISS: {e}")
+                # Создаем пустой индекс в случае ошибки
+                self.db = None
         else:
             print(f"Не удалось извлечь текст из RTF: {self.document_name}")
+            self.db = None
 
     def _extract_text(self):
         """Извлекает текст из RTF файла"""
         try:
-            with open(self.document_path, 'r', encoding='utf-8', errors='ignore') as file:
-                rtf_content = file.read()
+            # Проверяем существование файла
+            if not os.path.exists(self.document_path):
+                print(f"Файл не найден: {self.document_path}")
+                return []
 
-            # Конвертируем RTF в plain text
-            plain_text = rtf.rtf_to_text(rtf_content)
+            # Пробуем разные кодировки для чтения RTF файла
+            encodings = ['utf-8', 'cp1251', 'cp1252', 'iso-8859-1']
+
+            for encoding in encodings:
+                try:
+                    with open(self.document_path, 'r', encoding=encoding, errors='ignore') as file:
+                        rtf_content = file.read()
+
+                    # Проверяем, что файл не пустой
+                    if not rtf_content.strip():
+                        continue
+
+                    # Конвертируем RTF в plain text
+                    plain_text = rtf.rtf_to_text(rtf_content)
+
+                    # Проверяем, что получили осмысленный текст
+                    if plain_text.strip() and len(plain_text.strip()) > 10:
+                        break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                print(f"Не удалось прочитать RTF файл с поддерживаемыми кодировками: {self.document_path}")
+                return []
 
             # Создаем документы из текста
             documents = [Document(page_content=plain_text, metadata={
@@ -145,7 +192,10 @@ class RtfDocument:
 
     def search_document(self, query, rerank_k=10):
         """Поиск в документе"""
-        embedding_results = self.db.similarity_search(query, k=rerank_k) if hasattr(self, 'db') else []
+        if not hasattr(self, 'db') or self.db is None:
+            return {"context_docs": [], "omitted_tables": []}
+
+        embedding_results = self.db.similarity_search(query, k=rerank_k)
         tfidf_results = self.search_with_tfidf(query, top_k=rerank_k)
 
         all_results = embedding_results + tfidf_results
@@ -165,9 +215,10 @@ class RtfDocument:
 
 
 if __name__ == "__main__":
+    document_name = 'Образец резюме 1 Бизнес Аналитик'
     document = RtfDocument(
-        document_name='example.rtf',
-        document_dir='../documents/rtf/',
-        extract_dir_name='example_rtf',
+        document_name=f'{document_name}.rtf',
+        document_dir='../documents/cv/rtf/',
+        extract_dir_name=f'{document_name}_rtf',
         rebuild_index=True
     )

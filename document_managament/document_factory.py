@@ -1,6 +1,6 @@
-from .pdf_document import Pdfdocument
-from .docx_document import DocxDocument
-from .rtf_document import RtfDocument
+from document_managament.pdf_document import Pdfdocument
+from document_managament.docx_document import DocxDocument
+from document_managament.rtf_document import RtfDocument
 from typing import Union
 
 

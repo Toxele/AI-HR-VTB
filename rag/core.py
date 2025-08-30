@@ -1,7 +1,8 @@
 import requests
 from typing import List, Dict, Any
-from rag.config import LM_ADDRESS, LM_PORT, MODEL_ID, TEXT_EMBEDDING_MODEL
+from config import LM_ADDRESS, LM_PORT, MODEL_ID, TEXT_EMBEDDING_MODEL
 from document_managament.document_manager import DocumentManager
+import os
 
 
 class RAGSystem:
@@ -41,30 +42,38 @@ class RAGSystem:
         except Exception as e:
             return {'role': 'error', 'content': f'Error: {str(e)}'}
 
-    def generate_candidate_report(self, candidate_info: Dict, job_text: str) -> Dict[str, Any]:
+    def generate_candidate_report(self, candidate_info: Dict) -> Dict[str, Any]:
         """Генерирует отчет по кандидату"""
         resume_text = candidate_info['resume_text']
+        job_text = candidate_info['job_text']
+        job_name = candidate_info['job_name']
 
         # Анализ соответствия
-        analysis = self.document_manager.analyze_candidate_fit(resume_text, job_text)
+        analysis = self.document_manager.analyze_candidate_fit(resume_text, job_text, job_name)
 
         # Генерация детального отчета
-        system_prompt = """Ты - HR-специалист. Проанализируй соответствие кандидата требованиям вакансии и создай подробный отчет."""
+        system_prompt = """Ты - опытный HR-специалист. Проанализируй соответствие кандидата требованиям вакансии и создай подробный отчет с обоснованием рекомендации."""
 
         user_prompt = f"""
+ВАКАНСИЯ: {job_name}
+
 ТРЕБОВАНИЯ ВАКАНСИИ:
-{job_text}
+{job_text[:2000]}...
 
 РЕЗЮМЕ КАНДИДАТА:
-{resume_text}
+{resume_text[:2000]}...
 
 ПРЕДВАРИТЕЛЬНЫЙ АНАЛИЗ:
-- Общий балл: {analysis['total_score']:.2f}
-- Технические навыки: {analysis['technical_skills']['score']:.2f}
+- Общий балл соответствия: {analysis['total_score']:.2f}/1.0
+- Навыки: {analysis['technical_skills']['score']:.2f}
 - Опыт работы: {analysis['experience']['score']:.2f}
 - Образование: {analysis['education']['score']:.2f}
+- Языки: {analysis['language_skills']['score']:.2f}
 
-Создай подробный отчет с рекомендацией.
+СОВПАДАЮЩИЕ НАВЫКИ: {', '.join(analysis['technical_skills']['matched_skills'][:5])}
+ОТСУТСТВУЮЩИЕ НАВЫКИ: {', '.join(analysis['technical_skills']['missing_skills'][:3])}
+
+Создай подробный профессиональный отчет с рекомендацией для HR-отдела.
 """
 
         messages = [
@@ -85,22 +94,17 @@ class RAGSystem:
         if not self._is_ready:
             raise RuntimeError("System not ready. Call load_data() first")
 
-        # Сопоставление кандидатов с вакансией
+        # Сопоставление кандидатов с вакансиями
         matches = self.document_manager.match_candidates_to_job(top_n=top_n)
-
-        # Получаем текст требований вакансии
-        job_texts = []
-        for job_doc in self.document_manager.job_requirement_documents:
-            job_texts.extend(job_doc.get_all_text())
-        job_combined = " ".join(job_texts)
 
         results = []
         for score, candidate_info in matches:
-            report = self.generate_candidate_report(candidate_info, job_combined)
+            report = self.generate_candidate_report(candidate_info)
             results.append({
                 'similarity_score': score,
                 'report': report,
-                'candidate_name': candidate_info['metadata']['document_name']
+                'candidate_name': candidate_info['metadata']['document_name'],
+                'job_name': candidate_info['job_name']
             })
 
         return results
