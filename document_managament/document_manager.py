@@ -114,10 +114,12 @@ class DocumentManager:
             # Обновляем веса в pretrained embeddings если они используются
             if self.use_pretrained and self.pretrained_embeddings:
                 domain_weights = self.dynamic_scaling_system.get_domain_weights()
-                self.pretrained_embeddings.update_domain_weights(domain_weights)
 
-            print(f"Динамически извлечено доменов: {len(self.dynamic_scaling_system.get_domains())}")
-            print(f"Динамически извлечено поддоменов: {len(self.dynamic_scaling_system.get_subdomains())}")
+                # Вместо прямого вызова update_domain_weights, используем наш публичный метод
+                self.update_dynamic_weights(all_texts, document_types)
+
+                print(f"Динамически извлечено доменов: {len(self.dynamic_scaling_system.get_domains())}")
+                print(f"Динамически извлечено поддоменов: {len(self.dynamic_scaling_system.get_subdomains())}")
 
     def load_documents(self):
         """Загружает документы из четко разделенных папок"""
