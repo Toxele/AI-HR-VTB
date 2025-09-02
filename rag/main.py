@@ -57,17 +57,31 @@ def main():
         rag_system = RAGSystem()
         logger.info("System initialized successfully.")
 
-        # Оценка кандидатов
-        results = rag_system.evaluate_candidates(top_n=5)
+        # Получаем информацию о документах
+        docs_info = rag_system.get_documents_info()
+        print("=" * 80)
+        print("ИНФОРМАЦИЯ О СИСТЕМЕ")
+        print("=" * 80)
+        print(f"Резюме загружено: {docs_info['resumes_count']}")
+        print(f"Вакансий загружено: {docs_info['vacancies_count']}")
+        print(f"Режим эмбеддингов: {docs_info['embedding_mode']}")
+        print(f"Динамическое масштабирование: {'Включено' if docs_info['dynamic_scaling_enabled'] else 'Выключено'}")
 
-        if not results:
-            print("Не найдено документов для анализа.")
+        if docs_info['resumes_count'] == 0 or docs_info['vacancies_count'] == 0:
+            print("\nНе найдено документов для анализа.")
             print("Пожалуйста, разместите файлы в соответствующих папках:")
             print("- Резюме: documents/cv/pdf/, documents/cv/docx/, documents/cv/rtf/")
             print("- Вакансии: documents/vacancy/pdf/, documents/vacancy/docx/, documents/vacancy/rtf/")
             return
 
-        print("=" * 100)
+        # Оценка кандидатов
+        results = rag_system.evaluate_candidates(top_n=5)
+
+        if not results:
+            print("Не найдено подходящих кандидатов.")
+            return
+
+        print("\n" + "=" * 100)
         print("HR CANDIDATE EVALUATION REPORT")
         print("=" * 100)
         print(f"Проанализировано кандидатов: {len(results)}")
@@ -88,8 +102,9 @@ def main():
             print(f"Education: {result['report']['analysis']['education']['score']:.2f}")
             print(f"Languages: {result['report']['analysis']['language_skills']['score']:.2f}")
 
-            print(
-                f"\nMatched Skills: {', '.join(result['report']['analysis']['technical_skills']['matched_skills'][:10])}")
+            if result['report']['analysis']['technical_skills']['matched_skills']:
+                print(
+                    f"\nMatched Skills: {', '.join(result['report']['analysis']['technical_skills']['matched_skills'][:10])}")
             if result['report']['analysis']['technical_skills']['missing_skills']:
                 print(
                     f"Missing Skills: {', '.join(result['report']['analysis']['technical_skills']['missing_skills'][:5])}")
@@ -104,8 +119,8 @@ def main():
             print(result['report']['detailed_report'])
             print("\n")
 
-        # Вычисление метрик
-        predicted_scores = [result['report']['analysis']['total_score'] for result in results]
+        # Вычисление метрик (заглушка - в реальной системе нужны истинные метки)
+        predicted_scores = [result['similarity_score'] for result in results]
         true_labels = [1] * len(results)  # Пример истинных меток
 
         metrics = calculate_metrics(true_labels, predicted_scores)
