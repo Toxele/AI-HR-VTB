@@ -4,7 +4,7 @@ import time
 import io
 import wave
 import torch
-torch.hub.list('snakers4/silero-vad', force_reload=True)
+#torch.hub.list('snakers4/silero-vad', force_reload=True) # раскоментить, если будет ошибка загрузки или типа того
 import torch
 import torchaudio
 print(f"PyTorch version: {torch.__version__}")
@@ -15,6 +15,7 @@ from stt_service import WhisperSTT
 from tts_service import VoskTTS
 from vad_service import SileroVAD
 from dialog_service import SmartTurn
+from context_manager import ContextManager
 #from silero_vad import SileroVAD
 
 vad = SileroVAD(threshold=0.015)
@@ -97,8 +98,12 @@ stream = p.open(format=FORMAT,
                 input=True,
                 frames_per_buffer=CHUNK)
 
-print("Система готова к работе. Говорите...")
 
+resume_filename = "Образец резюме 1 Бизнес аналитик.rtf"
+vacancy_filename = "Описание бизнес аналитик.docx"
+context_manager = ContextManager(resume_filename=resume_filename, vacancy_filename=vacancy_filename)
+
+print("Система готова к работе. Говорите...")
 try:
     while True:
         # Чтение аудиоданных с микрофона
