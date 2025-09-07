@@ -1,17 +1,39 @@
-from langchain_community.document_loaders import PyMuPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 import pickle
 import os
 from langchain_community.vectorstores import FAISS
-import pdfplumber
 import torch
 from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from typing import List
 import re
+
+try:
+    from langchain_community.document_loaders import PyMuPDFLoader
+
+    PYPDF_AVAILABLE = True
+except ImportError:
+    PYPDF_AVAILABLE = False
+    print("PyMuPDFLoader недоступен, будет использована альтернативная обработка PDF")
+
+try:
+    import pdfplumber
+
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+    print("pdfplumber недоступен, будет использована альтернативная обработка PDF")
+
+try:
+    import PyPDF2
+
+    PYPDF2_AVAILABLE = True
+except ImportError:
+    PYPDF2_AVAILABLE = False
+    print("PyPDF2 недоступен, будет использована альтернативная обработка PDF")
 
 
 class Pdfdocument:
@@ -136,38 +158,102 @@ class Pdfdocument:
             print(f"Не удалось извлечь текст из PDF: {self.document_name}")
             self.db = None
 
-    def _extract_text(self):
-        """Извлекает текст из PDF файла"""
+    def _extract_text_pymupdf(self):
+        """Извлекает текст из PDF с использованием PyMuPDF"""
         try:
-            # Проверяем существование файла
-            if not os.path.exists(self.document_path):
-                print(f"Файл не найден: {self.document_path}")
-                return []
-
             loader = PyMuPDFLoader(self.document_path)
             pages = loader.load()
-
-            # Проверяем, что документ не пустой
-            if not pages or not any(page.page_content.strip() for page in pages):
-                print(f"PDF документ пуст или не содержит текста: {self.document_path}")
-                return []
-
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap
-            )
-            chunks = text_splitter.split_documents(pages)
-            for doc in chunks:
-                doc.metadata["type"] = "text"
-                doc.metadata["source"] = self.document_path
-                doc.metadata["file_type"] = "pdf"
-            return chunks
+            return pages
         except Exception as e:
-            print(f"Ошибка извлечения текста из PDF: {e}")
+            print(f"Ошибка PyMuPDF: {e}")
+            return None
+
+    def _extract_text_pdfplumber(self):
+        """Извлекает текст из PDF с использованием pdfplumber"""
+        try:
+            pages = []
+            with pdfplumber.open(self.document_path) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    text = page.extract_text()
+                    if text:
+                        pages.append(Document(
+                            page_content=text,
+                            metadata={
+                                "page": i + 1,
+                                "source": self.document_path,
+                                "type": "text",
+                                "file_type": "pdf"
+                            }
+                        ))
+            return pages
+        except Exception as e:
+            print(f"Ошибка pdfplumber: {e}")
+            return None
+
+    def _extract_text_pypdf2(self):
+        """Извлекает текст из PDF с использованием PyPDF2"""
+        try:
+            pages = []
+            with open(self.document_path, 'rb') as file:
+                reader = PyPDF2.PdfReader(file)
+                for i, page in enumerate(reader.pages):
+                    text = page.extract_text()
+                    if text:
+                        pages.append(Document(
+                            page_content=text,
+                            metadata={
+                                "page": i + 1,
+                                "source": self.document_path,
+                                "type": "text",
+                                "file_type": "pdf"
+                            }
+                        ))
+            return pages
+        except Exception as e:
+            print(f"Ошибка PyPDF2: {e}")
+            return None
+
+    def _extract_text(self):
+        """Извлекает текст из PDF файла с использованием доступных методов"""
+        # Проверяем существование файла
+        if not os.path.exists(self.document_path):
+            print(f"Файл не найден: {self.document_path}")
             return []
 
+        # Пробуем разные методы извлечения текста
+        pages = None
+
+        if PYPDF_AVAILABLE:
+            pages = self._extract_text_pymupdf()
+
+        if pages is None and PDFPLUMBER_AVAILABLE:
+            pages = self._extract_text_pdfplumber()
+
+        if pages is None and PYPDF2_AVAILABLE:
+            pages = self._extract_text_pypdf2()
+
+        if pages is None:
+            print("Все методы извлечения текста недоступны. Установите один из: pymupdf, pdfplumber, PyPDF2")
+            return []
+
+        # Проверяем, что документ не пустой
+        if not pages or not any(page.page_content.strip() for page in pages):
+            print(f"PDF документ пуст или не содержит текста: {self.document_path}")
+            return []
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap
+        )
+        chunks = text_splitter.split_documents(pages)
+        for doc in chunks:
+            doc.metadata["type"] = "text"
+            doc.metadata["source"] = self.document_path
+            doc.metadata["file_type"] = "pdf"
+        return chunks
+
     def search_document(self, query, rerank_k=10):
-        """Поиск в докуменte"""
+        """Поиск в документе"""
         if not hasattr(self, 'db') or self.db is None:
             return {"context_docs": [], "omitted_tables": []}
 

@@ -1,15 +1,16 @@
 import os
 from pathlib import Path
 from langchain_huggingface import HuggingFaceEmbeddings
+from nltk.corpus.reader import documents
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import json
 from typing import Dict, List, Tuple, Union, Any, Optional
-from document_managament.document_factory import DocumentFactory
-from document_managament.word2vec_processor import Word2VecProcessor
-from document_managament.pretrained_embeddings import PretrainedEmbeddings
-from document_managament.dynamic_scaling_system import DynamicScalingSystem
+from document_management.document_factory import DocumentFactory
+from document_management.word2vec_processor import Word2VecProcessor
+from document_management.pretrained_embeddings import PretrainedEmbeddings
+from document_management.dynamic_scaling_system import DynamicScalingSystem
 import re
 import logging
 from collections import Counter
@@ -569,6 +570,46 @@ class DocumentManager:
 
         return words
 
+    def load_document(self, file_path: str):
+        """
+        Загружает один документ по указанному пути
+
+        Args:
+            file_path: Полный путь к файлу
+
+        Returns:
+            Загруженный документ или None если не удалось загрузить
+        """
+        try:
+            file_path_obj = Path(file_path)
+            if not file_path_obj.exists():
+                print(f"Файл не найден: {file_path}")
+                return None
+
+            document_name = file_path_obj.name
+            document_dir = str(file_path_obj.parent)
+
+            print(f"Загружаем документ: {document_name}")
+
+            document = DocumentFactory.create_document(
+                document_name=document_name,
+                document_dir=document_dir,
+                extract_dir_name=file_path_obj.stem,
+                text_embeddings=self.text_embeddings,
+                rebuild_index=self.rebuild_all_indexes
+            )
+
+            if document:
+                print(f"✓ Успешно загружен: {document_name}")
+                return document
+            else:
+                print(f"✗ Не удалось загрузить: {document_name}")
+                return None
+
+        except Exception as e:
+            print(f"Ошибка при загрузке документа {file_path}: {e}")
+            return None
+
 
 # Пример использования
 if __name__ == "__main__":
@@ -596,8 +637,8 @@ if __name__ == "__main__":
     print("=" * 50)
 
     # Получаем список доступных файлов для демонстрации
-    available_resumes = [doc.document_name for doc in document_manager.resume_documents[:3]]
-    available_vacancies = [doc.document_name for doc in document_manager.job_requirement_documents[:3]]
+    available_resumes = [doc.document_name for doc in document_manager.resume_documents[:]]
+    available_vacancies = [doc.document_name for doc in document_manager.job_requirement_documents[:]]
 
     if available_resumes and available_vacancies:
         print(f"Доступные резюме: {available_resumes}")
@@ -661,3 +702,4 @@ if __name__ == "__main__":
             result = document_manager.get_specific_match(resume, vacancy)
             if result:
                 print(f"{resume} -> {vacancy}: {result['similarity_score']:.3f} ({result['match_level']})")
+

@@ -1,7 +1,8 @@
+
 import requests
 from typing import List, Dict, Any, Optional, Set, Tuple
 from config import LM_ADDRESS, LM_PORT, MODEL_ID, TEXT_EMBEDDING_MODEL
-from document_managament.document_manager import DocumentManager
+from document_management.document_manager import DocumentManager
 import os
 import re
 import numpy as np
@@ -149,8 +150,8 @@ class RAGSystem:
 
     def _analyze_technical_skills(self, resume_text: str, job_text: str) -> Dict[str, Any]:
         """Детальный анализ технических навыков"""
-        resume_skills = self._extract_technical_skills(resume_text)  # Только 1 аргумент
-        job_skills = self._extract_technical_skills(job_text)  # Только 1 аргумент
+        resume_skills = self._extract_technical_skills(resume_text)
+        job_skills = self._extract_technical_skills(job_text)
 
         matched_skills = resume_skills & job_skills
         missing_skills = job_skills - resume_skills
@@ -279,7 +280,7 @@ class RAGSystem:
             ('магистр', 'магистратура', 'master'),
             ('специалист', 'специалитет', 'specialist'),
             ('бакалавр', 'бакалавриат', 'bachelor'),
-            ('высшее', 'высшее образование', 'higher education'),
+            ('высшее', 'высшее образование', 'higher education', 'университет', 'university'),
             ('колледж', 'техникум', 'college', 'technical'),
             ('среднее', 'среднее образование', 'secondary'),
             ('школа', 'школьное', 'school')
@@ -369,7 +370,7 @@ class RAGSystem:
             r'(английский|english).*?(требуется|необходим|обязателен).*?(базовый|средний|продвинутый|носитель)',
             r'(немецкий|german).*?(требуется|необходим|обязателен)',
             r'(французский|french).*?(требуется|необходим|обязателен)',
-            r'знание.*?(английск|немецк|французск|китайск).*?язык'
+            r'знание.*?(английск|немецск|французск|китайск).*?язык'
         ]
 
         for pattern in patterns:
@@ -462,6 +463,38 @@ class RAGSystem:
 
         return results
 
+    def evaluate_single_candidate(self, resume_path: str, vacancy_path: str) -> dict[str, dict[
+                                                                                              str, Any] | float | Any] | None:
+        """
+        Оценивает одного кандидата для одной вакансии
+        """
+        print(f"Загрузка документов:")
+        print(f"Резюме: {resume_path}")
+        print(f"Вакансия: {vacancy_path}")
+
+        # Загрузка документов
+        resume_doc = self.document_manager.load_document(resume_path)
+        vacancy_doc = self.document_manager.load_document(vacancy_path)
+
+        if not resume_doc or not vacancy_doc:
+            print(f"Не удалось загрузить документы:")
+            print(f"Резюме: {resume_path} - {'найден' if os.path.exists(resume_path) else 'не найден'}")
+            print(f"Вакансия: {vacancy_path} - {'найден' if os.path.exists(vacancy_path) else 'не найден'}")
+            return None
+
+        # Оценка соответствия
+        similarity_score = self._calculate_similarity(resume_doc, vacancy_doc)
+
+        # Генерация отчета
+        report = self._generate_detailed_report(resume_doc, vacancy_doc, similarity_score)
+
+        return {
+            'candidate_name': resume_doc.document_name,
+            'job_name': vacancy_doc.document_name,
+            'similarity_score': similarity_score,
+            'report': report
+        }
+
     def get_specific_match(self, resume_name: str, vacancy_name: str) -> Optional[Dict[str, Any]]:
         """
         Находит соответствие конкретного резюме конкретной вакансии
@@ -471,3 +504,261 @@ class RAGSystem:
 
         # Используем публичный метод DocumentManager
         return self.document_manager.get_specific_match(resume_name, vacancy_name)
+
+    def _calculate_similarity(self, resume_doc, vacancy_doc) -> float:
+        """
+        Вычисляет семантическую схожесть между резюме и вакансией
+        """
+        try:
+            # Получаем эмбеддинги документов
+            resume_embedding = self.document_manager.get_document_embedding(resume_doc)
+            vacancy_embedding = self.document_manager.get_document_embedding(vacancy_doc)
+
+            if resume_embedding is None or vacancy_embedding is None:
+                return 0.0
+
+            # Вычисляем косинусное сходство
+            similarity = np.dot(resume_embedding, vacancy_embedding) / (
+                    np.linalg.norm(resume_embedding) * np.linalg.norm(vacancy_embedding)
+            )
+
+            return float(similarity)
+
+        except Exception as e:
+            print(f"Error calculating similarity: {e}")
+            return 0.0
+
+    def _generate_detailed_report(self, resume_doc, vacancy_doc, similarity_score: float) -> Dict[str, Any]:
+        """
+        Генерирует детальный отчет для кандидата
+        """
+        candidate_info = {
+            'resume_text': resume_doc.text_content,
+            'job_text': vacancy_doc.text_content,
+            'job_name': vacancy_doc.document_name,
+            'metadata': {
+                'document_name': resume_doc.document_name,
+                'file_path': resume_doc.file_path
+            }
+        }
+
+        return self.generate_candidate_report(candidate_info)
+
+    def get_candidate_evaluation(self, resume_filename: str, vacancy_filename: str) -> str:
+        """
+        Упрощенная функция для получения оценки одного кандидата
+        """
+        print(f"Поиск файлов: {resume_filename} и {vacancy_filename}")
+
+        # Ищем документы среди уже загруженных
+        resume_doc = None
+        vacancy_doc = None
+
+        # Ищем резюме
+        for doc in self.document_manager.resume_documents:
+            if doc.document_name == resume_filename:
+                resume_doc = doc
+                break
+
+        # Ищем вакансию
+        for doc in self.document_manager.job_requirement_documents:
+            if doc.document_name == vacancy_filename:
+                vacancy_doc = doc
+                break
+
+        print(f"Найденные документы:")
+        print(f"Резюме: {resume_doc.document_name if resume_doc else 'Не найдено'}")
+        print(f"Вакансия: {vacancy_doc.document_name if vacancy_doc else 'Не найдено'}")
+
+        if not resume_doc or not vacancy_doc:
+            return f"❌ Файлы не найдены:\nРезюме: {resume_filename}\nВакансия: {vacancy_filename}"
+
+        # Оценка кандидата - используем уже загруженные документы
+        result = self.evaluate_single_candidate_from_docs(resume_doc, vacancy_doc)
+
+        if not result:
+            return "❌ Не удалось оценить кандидата"
+
+        # Формирование отчета
+        output = []
+
+        similarity_score = result['similarity_score']
+        total_score = result['report']['analysis']['total_score']
+
+        # Выбор эмодзи в зависимости от оценки
+        if similarity_score >= 0.8:
+            emoji = "🥇"
+        elif similarity_score >= 0.6:
+            emoji = "🥈"
+        elif similarity_score >= 0.4:
+            emoji = "🥉"
+        else:
+            emoji = "⚠️ "
+
+        output.append(f"{'=' * 25} {emoji} КАНДИДАТ: {result['candidate_name']} {'=' * 25}")
+        output.append(f"🎯 Вакансия: {result['job_name']}")
+        output.append(f"📊 Семантическая схожесть с вакансией: {similarity_score:.3f}")
+        output.append(f"🏆 Метрика образования: {total_score:.2f}/1.00")
+        output.append(f"💡 РЕКОМЕНДАЦИЯ: {result['report']['analysis']['recommendation']}")
+
+        # Детальный анализ
+        output.append("\n" + "-" * 30 + " 📊 ДЕТАЛЬНЫЙ АНАЛИЗ " + "-" * 30)
+
+        analysis = result['report']['analysis']
+
+        # Технические навыки
+        tech = analysis['technical_skills']
+        output.append(f"🔧 ТЕХНИЧЕСКИЕ НАВЫКИ: {tech['score']:.2f}")
+        output.append(f"   ✅ Совпадений: {tech['matched_count']}/{tech['total_required']}")
+
+        if tech['matched_skills']:
+            output.append(f"   🎯 Совпавшие: {', '.join(tech['matched_skills'][:5])}")
+        if tech['missing_skills']:
+            output.append(f"   ❌ Отсутствуют: {', '.join(tech['missing_skills'][:3])}")
+        if tech['extra_skills']:
+            output.append(f"   ➕ Дополнительные: {', '.join(tech['extra_skills'][:3])}")
+
+        # Опыт работы
+        exp = analysis['experience']
+        output.append(f"\n💼 ОПЫТ РАБОТЫ: {exp['score']:.2f}")
+        output.append(f"   📅 Кандидат: {exp['total_years']} лет")
+        output.append(f"   🎯 Требуется: {exp['required_years']} лет")
+
+        if exp['total_years'] >= exp['required_years']:
+            output.append("   ✅ Достаточный опыт")
+        else:
+            deficit = exp['required_years'] - exp['total_years']
+            output.append(f"   ⚠️  Не хватает {deficit} лет опыта")
+
+        # Образование
+        edu = analysis['education']
+        output.append(f"\n🎓 ОБРАЗОВАНИЕ: {edu['score']:.2f}")
+        output.append(f"   📚 Кандидат: {edu['highest_level'] or 'Не найдено'}")
+        output.append(f"   🎯 Требуется: {edu['required_level'] or 'Не найдено'}")
+
+        if edu.get('resume_level_value', 0) > 0 and edu.get('required_level_value', 0) > 0:
+            if edu['resume_level_value'] >= edu['required_level_value']:
+                output.append("   ✅ Уровень образования соответствует требованиям")
+            else:
+                deficit = edu['required_level_value'] - edu['resume_level_value']
+                level_names = {1: 'школа', 2: 'среднее', 3: 'колледж', 4: 'бакалавр',
+                               5: 'специалист', 6: 'магистр', 7: 'кандидат', 8: 'доктор'}
+                required_name = level_names.get(edu['required_level_value'], 'требуемый уровень')
+                current_name = level_names.get(edu['resume_level_value'], 'текущий уровень')
+                output.append(f"   ⚠️  Не хватает {deficit} уровня(ей) образования")
+                output.append(f"   📉 Текущий: {current_name}, Требуется: {required_name}")
+
+        # Языковые навыки
+        lang = analysis['language_skills']
+        output.append(f"\n🌍 ЯЗЫКОВЫЕ НАВЫКИ: {lang['score']:.2f}")
+
+        if lang['required_languages']:
+            matched = len(lang['matched_languages'])
+            required = len(lang['required_languages'])
+            output.append(f"   ✅ Совпадений: {matched}/{required} языков")
+
+            # Детали по требуемым языкам
+            output.append("   🎯 Требуемые языки:")
+            for lang_name, level in lang['required_languages'].items():
+                status = "✅" if lang_name in [l.split(' (')[0] for l in lang.get('matched_languages', [])] else "❌"
+                output.append(f"      {status} {lang_name}: {level}")
+
+            if lang['matched_languages']:
+                output.append(f"   🗣️  Совпавшие: {', '.join(lang['matched_languages'][:5])}")
+        else:
+            output.append("   📝 Требований к языкам нет")
+
+        # Дополнительная информация о языках кандидата
+        if lang.get('resume_languages'):
+            output.append("   📚 Языки в резюме:")
+            for lang_name, level in lang['resume_languages'].items():
+                output.append(f"      • {lang_name}: {level}")
+
+        # Детальный отчет от LLM
+        output.append("\n" + "-" * 30 + " 📝 ДЕТАЛЬНЫЙ ОТЧЕТ " + "-" * 30)
+        output.append(result['report']['detailed_report'])
+
+        output.append("\n" + "=" * 80)
+
+        return "\n".join(output)
+
+    def evaluate_single_candidate_from_docs(self, resume_doc, vacancy_doc) -> Dict:
+        """
+        Оценивает одного кандидата для одной вакансии из уже загруженных документов
+        """
+        print(f"Оценка кандидата:")
+        print(f"Резюме: {resume_doc.document_name}")
+        print(f"Вакансия: {vacancy_doc.document_name}")
+
+        # Получаем тексты документов
+        resume_text = " ".join(resume_doc.get_all_text())
+        vacancy_text = " ".join(vacancy_doc.get_all_text())
+
+        if not resume_text or not vacancy_text:
+            print("Один из документов пуст")
+            return None
+
+        # Оценка соответствия
+        similarity_score = self._calculate_similarity_from_texts(resume_text, vacancy_text)
+
+        # Генерация отчета
+        report = self._generate_detailed_report_from_texts(
+            resume_text, vacancy_text,
+            resume_doc.document_name, vacancy_doc.document_name,
+            similarity_score
+        )
+
+        return {
+            'candidate_name': resume_doc.document_name,
+            'job_name': vacancy_doc.document_name,
+            'similarity_score': similarity_score,
+            'report': report
+        }
+
+    def _calculate_similarity_from_texts(self, resume_text: str, vacancy_text: str) -> float:
+        """
+        Вычисляет семантическую схожесть между текстами
+        """
+        try:
+            # Используем тот же метод, что и в DocumentManager
+            if self.document_manager.use_pretrained and self.document_manager.pretrained_embeddings:
+                return self.document_manager.pretrained_embeddings.calculate_similarity(vacancy_text, resume_text)
+            else:
+                # Используем гибридный метод
+                return self.document_manager._calculate_hybrid_similarity(vacancy_text, resume_text)
+
+        except Exception as e:
+            print(f"Error calculating similarity: {e}")
+            return 0.0
+
+    def _generate_detailed_report_from_texts(self, resume_text: str, vacancy_text: str,
+                                             resume_name: str, vacancy_name: str,
+                                             similarity_score: float) -> Dict[str, Any]:
+        """
+        Генерирует детальный отчет для кандидата из текстов
+        """
+        candidate_info = {
+            'resume_text': resume_text,
+            'job_text': vacancy_text,
+            'job_name': vacancy_name,
+            'metadata': {
+                'document_name': resume_name,
+                'file_path': ''  # Не требуется для анализа
+            }
+        }
+
+        return self.generate_candidate_report(candidate_info)
+
+
+
+
+# Пример использования
+if __name__ == "__main__":
+    rag_system = RAGSystem()
+
+    # Пример вызова функции
+    resume_file = "Образец резюме 1 Бизнес аналитик.rtf"
+    vacancy_file = "Описание бизнес аналитик.docx"
+
+    report = rag_system.get_candidate_evaluation(resume_file, vacancy_file)
+    print(report)
