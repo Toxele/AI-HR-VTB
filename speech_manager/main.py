@@ -3,12 +3,21 @@ import numpy as np
 import time
 import io
 import wave
+import torch
+torch.hub.list('snakers4/silero-vad', force_reload=True)
+import torch
+import torchaudio
+print(f"PyTorch version: {torch.__version__}")
+print(f"TorchAudio version: {torchaudio.__version__}")
+print("Все модули загружены успешно!")
 from collections import deque
 from stt_service import WhisperSTT
 from tts_service import VoskTTS
 from vad_service import SileroVAD
 from dialog_service import SmartTurn
+#from silero_vad import SileroVAD
 
+vad = SileroVAD(threshold=0.015)
 # Инициализация сервисов
 stt = WhisperSTT()
 tts = VoskTTS()
