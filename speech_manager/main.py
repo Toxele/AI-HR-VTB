@@ -5,7 +5,6 @@ import io
 import wave
 import torch
 #torch.hub.list('snakers4/silero-vad', force_reload=True) # раскоментить, если будет ошибка загрузки или типа того
-import torch
 import torchaudio
 print(f"PyTorch version: {torch.__version__}")
 print(f"TorchAudio version: {torchaudio.__version__}")
